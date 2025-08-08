@@ -1,0 +1,5 @@
+Q: What is Foo?
+A: Bar.
+
+Q: How many apples are in a dozen?
+A: 12 apples make a dozen.

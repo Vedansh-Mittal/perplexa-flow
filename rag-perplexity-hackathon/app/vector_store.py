@@ -5,9 +5,10 @@ from typing import List, Dict, Any
 import chromadb
 from chromadb.utils import embedding_functions
 
-# Resolve a stable on-disk path for Chroma persistence (./db next to this folder)
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-DB_DIR = os.path.join(BASE_DIR, "db")
+from .config import get_chroma_dir
+
+# Resolve a stable on-disk path for Chroma persistence
+DB_DIR = get_chroma_dir()
 os.makedirs(DB_DIR, exist_ok=True)
 
 
@@ -15,7 +16,7 @@ class VectorStore:
     """Wrapper around a persistent ChromaDB collection.
 
     - Uses SentenceTransformer "all-MiniLM-L6-v2" for embeddings
-    - Persists to ./db folder
+    - Persists to configured ./db folder
     """
 
     def __init__(self, collection_name: str = "documents") -> None:
@@ -33,9 +34,13 @@ class VectorStore:
             metadata={"hnsw:space": "cosine"},
         )
 
-    def add_texts(self, texts: List[str], metadatas: List[Dict[str, Any]] | None = None) -> int:
+    def add_texts(
+        self,
+        texts: List[str],
+        metadatas: List[Dict[str, Any]] | None = None,
+    ) -> List[str]:
         if not texts:
-            return 0
+            return []
         if metadatas is None:
             metadatas = [{} for _ in texts]
         if len(metadatas) != len(texts):
@@ -43,19 +48,40 @@ class VectorStore:
 
         ids = [str(uuid.uuid4()) for _ in texts]
         self.collection.add(ids=ids, documents=texts, metadatas=metadatas)
-        return len(texts)
+        return ids
 
     def query(self, text: str, top_k: int = 3) -> List[Dict[str, Any]]:
         if not text.strip():
             return []
-        result = self.collection.query(query_texts=[text], n_results=top_k)
+        result = self.collection.query(
+            query_texts=[text],
+            n_results=top_k,
+            include=["documents", "metadatas", "distances", "ids"],
+        )
         docs = result.get("documents", [[]])[0]
         metas = result.get("metadatas", [[]])[0]
         dists = result.get("distances", [[]])[0]
+        ids = result.get("ids", [[]])[0]
         out: List[Dict[str, Any]] = []
-        for doc, meta, dist in zip(docs, metas, dists):
-            out.append({"text": doc, "metadata": meta, "distance": float(dist)})
+        for _id, doc, meta, dist in zip(ids, docs, metas, dists):
+            try:
+                similarity = 1.0 - float(dist) if dist is not None else None
+            except Exception:
+                similarity = None
+            out.append(
+                {
+                    "id": _id,
+                    "text": doc,
+                    "metadata": meta or {},
+                    "distance": float(dist) if dist is not None else None,
+                    "similarity": similarity,
+                }
+            )
         return out
+
+    def delete_by_doc_id(self, doc_id: str) -> None:
+        """Delete all vectors that belong to a specific document id."""
+        self.collection.delete(where={"doc_id": doc_id})
 
     def clear(self) -> None:
         """Delete and recreate the collection (clears all vectors)."""
